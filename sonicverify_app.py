@@ -17,6 +17,12 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import os
+import requests
+BACKEND_URL = os.getenv(
+    "SONICVERIFY_BACKEND_URL",
+    "https://sonicverify.onrender.com"
+)
 
 try:
     import soundfile as sf
