@@ -585,19 +585,161 @@ def animate_waveform(samples, sr, color):
 # ============================================================================
 # ANALYSIS RUNNER
 # ============================================================================
-def run_analysis(samples, sr, source_name):
-    res = compute_scores(samples, sr)
-    res["filename"] = source_name
-    res["timestamp"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def send_to_backend(
+    audio_bytes,
+    filename,
+    content_type,
+    phone_number,
+    financial_request=False,
+    identity_claim="",
+):
+    response = requests.post(
+        f"{BACKEND_URL}/api/analyze",
+        files={
+            "audio": (
+                filename,
+                audio_bytes,
+                content_type or "audio/wav",
+            )
+        },
+        data={
+            "phone_number": phone_number,
+            "financial_request": str(financial_request).lower(),
+            "identity_claim": identity_claim,
+        },
+        timeout=120,
+    )
+
+    response.raise_for_status()
+    return response.json()
+
+
+def run_backend_analysis(
+    audio_bytes,
+    source_name,
+    content_type,
+    phone_number,
+    samples=None,
+    sr=None,
+):
+    try:
+        result = send_to_backend(
+            audio_bytes=audio_bytes,
+            filename=source_name,
+            content_type=content_type,
+            phone_number=phone_number,
+        )
+
+    except requests.exceptions.ConnectionError:
+        st.error(
+            "❌ Could not connect to the SonicVerify backend. "
+            "Please check that the backend is running."
+        )
+        return False
+
+    except requests.exceptions.Timeout:
+        st.error(
+            "❌ The backend took too long to analyze the audio. "
+            "Please try a shorter recording."
+        )
+        return False
+
+    except requests.exceptions.HTTPError as e:
+        st.error(f"❌ Backend returned an error: {e}")
+        return False
+
+    except Exception as e:
+        st.error(f"❌ Something went wrong: {e}")
+        return False
+
+    if not result.get("success"):
+        st.error(
+            result.get(
+                "error",
+                "The backend could not analyze this audio."
+            )
+        )
+        return False
+
+    risk = result["risk_assessment"]
+    voice = result["voice_analysis"]
+
+    risk_score = float(risk["risk_score"]) * 100
+
+    if risk["risk_level"] == "HIGH":
+        tier = "high"
+        verdict = "Likely AI-Generated / Cloned Voice"
+
+    elif risk["risk_level"] == "UNCERTAIN":
+        tier = "medium"
+        verdict = "Uncertain — Possible AI Voice"
+
+    else:
+        tier = "low"
+        verdict = "Likely Human Voice"
+
+    synthetic_probability = voice.get("synthetic_probability")
+    authentic_probability = voice.get("authentic_probability")
+    confidence = voice.get("confidence")
+
+    res = {
+        "filename": source_name,
+        "timestamp": dt.datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+
+        "risk": risk_score,
+        "verdict": verdict,
+        "tier": tier,
+        "color": risk_color(risk_score),
+
+        "synthetic_probability": (
+            float(synthetic_probability) * 100
+            if synthetic_probability is not None
+            else None
+        ),
+
+        "authentic_probability": (
+            float(authentic_probability) * 100
+            if authentic_probability is not None
+            else None
+        ),
+
+        "confidence": (
+            float(confidence) * 100
+            if confidence is not None
+            else None
+        ),
+
+        "risk_level": risk["risk_level"],
+        "summary": voice.get("summary", ""),
+        "reasons": risk.get("reasons", []),
+        "recommendation": result.get("recommendation", ""),
+        "disclaimer": result.get("disclaimer", ""),
+
+        "analysis_id": result.get("analysis_id"),
+
+        "duration": (
+            len(samples) / sr
+            if samples is not None and sr
+            else 0
+        ),
+
+        "sample_rate": sr,
+
+        "phone_number": phone_number,
+    }
+
     st.session_state.current_audio = samples
     st.session_state.current_sr = sr
     st.session_state.current_source = source_name
     st.session_state.last_result = res
-    st.session_state.history.append(
-        {k: v for k, v in res.items()}
-    )
+
+    st.session_state.history.append(res)
+
     st.session_state.page = "Analysis Result"
 
+    return True
 
 # ============================================================================
 # SIDEBAR NAVIGATION
